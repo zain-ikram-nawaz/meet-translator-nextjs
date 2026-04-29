@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Meet Translator",
+  "version": "1.0",
+  "description": "Real-time Urdu to English translator for Google Meet using browser mic & TTS.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage"
+  ],
+"host_permissions": [
+    "https://meet.google.com/*",
+    "https://translate.google.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Translator Control"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["https://meet.google.com/*"]
+    }
+  ],
+  "minimum_chrome_version": "112",
+  "offline_enabled": true
+}
