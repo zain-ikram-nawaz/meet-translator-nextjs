@@ -19,11 +19,11 @@ if (typeof window.meetTranslatorInjected === 'undefined') {
     // CRITICAL: Track processed final transcripts to prevent duplicates
     let processedTranscripts = new Set();
     let lastProcessedTime = 0;
-    const DUPLICATE_COOLDOWN = 2000; // 2 seconds ignore same text
+    const DUPLICATE_COOLDOWN = 800; // Reduced from 2000ms
 
-    // Debounce timer for rapid changes
-    let debounceTimer = null;
-    const DEBOUNCE_DELAY = 500; // Wait 500ms after speech stops
+    // Pre-warm timer for interim results
+    let prewarmTimer = null;
+    let lastInterimText = '';
 
     // Listen to popup messages
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -49,80 +49,74 @@ if (typeof window.meetTranslatorInjected === 'undefined') {
         try {
             recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
             recognition.lang = 'ur-PK';
-
-            // KEY FIX 1: Disable interim results completely for production stability
-            // Yeh temporary/jhoothe results band kar deta hai
-            recognition.interimResults = false;
-
+            recognition.interimResults = true; // Enable for pre-warming translation cache
             recognition.continuous = true;
             recognition.maxAlternatives = 1;
 
-            // Buffer for collecting speech
-            let speechBuffer = "";
-            let silenceTimer = null;
-            const SILENCE_TIMEOUT = 800; // 800ms silence = sentence complete
-
             recognition.onresult = (event) => {
-                const last = event.results.length - 1;
-                const result = event.results[last];
+                let finalTranscript = '';
+                let interimTranscript = '';
 
-                // KEY FIX 2: Sirf FINAL results process karo (isFinal === true)
-                if (!result.isFinal) {
-                    // Ignore interim results completely
-                    return;
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const text = event.results[i][0].transcript.trim();
+                    if (event.results[i].isFinal) {
+                        finalTranscript += text;
+                    } else {
+                        interimTranscript += text;
+                    }
                 }
 
-                const transcript = result[0].transcript.trim();
+                // Pre-warm translation cache while user is still speaking
+                if (!finalTranscript && interimTranscript && interimTranscript !== lastInterimText) {
+                    lastInterimText = interimTranscript;
+                    clearTimeout(prewarmTimer);
+                    prewarmTimer = setTimeout(() => {
+                        if (interimTranscript.length > 4) {
+                            chrome.runtime.sendMessage({
+                                action: "PREWARM_TRANSLATION",
+                                urduText: interimTranscript
+                            });
+                        }
+                    }, 350);
+                }
 
+                if (!finalTranscript) return;
+
+                // Final result arrived - cancel pre-warm, process immediately (no debounce!)
+                clearTimeout(prewarmTimer);
+                lastInterimText = '';
+
+                const transcript = finalTranscript.trim();
                 if (!transcript) return;
 
                 console.log("📝 FINAL Urdu Detected:", transcript);
 
-                // KEY FIX 3: Smart duplicate detection
                 const now = Date.now();
                 const transcriptKey = transcript.toLowerCase().trim();
 
-                // Check if exact same text was processed recently
-                if (processedTranscripts.has(transcriptKey)) {
-                    const timeDiff = now - lastProcessedTime;
-                    if (timeDiff < DUPLICATE_COOLDOWN) {
-                        console.log("⚠️ Duplicate ignored (cooldown):", transcript);
-                        return;
-                    }
+                if (processedTranscripts.has(transcriptKey) && (now - lastProcessedTime) < DUPLICATE_COOLDOWN) {
+                    console.log("⚠️ Duplicate ignored:", transcript);
+                    return;
                 }
 
-                // Check for partial duplicates (e.g., "میری" vs "میری اواز")
                 for (let processed of processedTranscripts) {
-                    // Agar naya text purane ka subset hai ya vice versa
                     if (transcriptKey.includes(processed) || processed.includes(transcriptKey)) {
-                        const timeDiff = now - lastProcessedTime;
-                        if (timeDiff < DUPLICATE_COOLDOWN) {
+                        if ((now - lastProcessedTime) < DUPLICATE_COOLDOWN) {
                             console.log("⚠️ Partial duplicate ignored:", transcript);
                             return;
                         }
                     }
                 }
 
-                // Add to processed set
                 processedTranscripts.add(transcriptKey);
                 lastProcessedTime = now;
 
-                // Cleanup old entries to prevent memory bloat
                 if (processedTranscripts.size > 20) {
-                    const firstKey = processedTranscripts.values().next().value;
-                    processedTranscripts.delete(firstKey);
+                    processedTranscripts.delete(processedTranscripts.values().next().value);
                 }
 
-                // Debounce: Wait for speech to actually stop
-                clearTimeout(debounceTimer);
-                speechBuffer = transcript; // Replace buffer with latest complete sentence
-
-                debounceTimer = setTimeout(() => {
-                    if (speechBuffer) {
-                        processTranslation(speechBuffer);
-                        speechBuffer = ""; // Clear buffer after processing
-                    }
-                }, DEBOUNCE_DELAY);
+                // Process immediately - no debounce delay
+                processTranslation(transcript);
             };
 
             recognition.onerror = (e) => {
@@ -175,7 +169,7 @@ if (typeof window.meetTranslatorInjected === 'undefined') {
     // Stop Speech Recognition
     function stopRecognition() {
         isRecording = false;
-        clearTimeout(debounceTimer);
+        clearTimeout(prewarmTimer);
         if (recognition) {
             try {
                 recognition.stop();
@@ -193,8 +187,7 @@ if (typeof window.meetTranslatorInjected === 'undefined') {
         // Prevent concurrent processing
         if (isProcessing) {
             console.log("⏳ Queueing:", urduText);
-            // Simple queue: wait and retry
-            setTimeout(() => processTranslation(urduText), 1000);
+            setTimeout(() => processTranslation(urduText), 200); // Reduced from 1000ms
             return;
         }
 
@@ -214,8 +207,8 @@ if (typeof window.meetTranslatorInjected === 'undefined') {
                 // Request audio playback
                 await playTranslation(response.translatedText);
 
-                // Cooldown between translations to prevent overlap
-                await delay(800);
+                // Minimal gap before allowing next translation
+                await delay(100);
             } else {
                 console.error("❌ Translation failed:", response?.error);
             }

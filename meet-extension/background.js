@@ -41,7 +41,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     // ===============================
-    // 2️⃣ TEXT TRANSLATION (Direct API + Cached)
+    // 2️⃣ PRE-WARM TRANSLATION CACHE (Silently fetch during interim speech)
+    // ===============================
+    if (request.action === "PREWARM_TRANSLATION" && request.urduText) {
+        const urduText = request.urduText;
+        if (!translationCache.has(urduText)) {
+            translateTextDirect(urduText)
+                .then(translatedText => addToCache(translationCache, urduText, translatedText))
+                .catch(() => {});
+        }
+        sendResponse({ success: true });
+        return true;
+    }
+
+    // ===============================
+    // 3️⃣ TEXT TRANSLATION (Direct API + Cached)
     // ===============================
     if (request.action === "TRANSLATE_TEXT" && request.urduText) {
         const urduText = request.urduText;
